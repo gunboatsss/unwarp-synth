@@ -173,7 +173,9 @@ function App() {
       <div>
       {synths.map((s) => (
         <Fragment key={s.name}><span>{s.name} <a href={`${arbitrum.blockExplorers.default.url}/address/${s.address}`}>{s.address}</a></span><br /></Fragment>
-      ))}
+      ))
+      }
+      <span>Spot Market: <a href={`${arbitrum.blockExplorers.default.url}/address/${SpotMarket.address}`}>{SpotMarket.address}</a></span>
       </div>
     </>
   )
