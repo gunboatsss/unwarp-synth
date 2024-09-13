@@ -1,6 +1,6 @@
 import { useAccount, useConnect, useDisconnect, useReadContracts, useWriteContract } from 'wagmi'
-import { encodeFunctionData, erc20Abi, formatEther, maxUint256} from 'viem'
-import type {Address} from 'viem'
+import { encodeFunctionData, erc20Abi, formatEther, maxUint256 } from 'viem'
+import type { Address } from 'viem'
 import type React from 'react'
 import { Fragment, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -8,6 +8,10 @@ import { arbitrum } from 'viem/chains'
 import { SPOT_MARKET_ABI, ARBITRUM_SPOT_MARKET } from './abi/SpotMarketProxy'
 import { TrustedMulticallForwarderAbi } from './abi/TrustedMulticallForwarder'
 import { ARB_sETH_ADDRESS, ARB_sETH_MARKET_ID, ARB_stBTC_ADDRESS, ARB_stBTC_MARKET_ID, TrustedMulticallForwarderAddress } from './constants'
+import { EvmPriceServiceConnection } from '@pythnetwork/pyth-evm-js'
+import { pythAbi } from './abi/pyth'
+import { readContract } from 'wagmi/actions'
+import { config } from './wagmi'
 function App() {
   const queryClient = useQueryClient();
   const account = useAccount()
@@ -15,6 +19,12 @@ function App() {
   const { data: hash, error: txError, isPending, writeContract } = useWriteContract()
   const [txHashArray, setTxHashArray] = useState(Array<`0x${string}` | undefined>)
   const { disconnect } = useDisconnect()
+  const pyth = {
+    address: '0xff1a0f4744e8582DF1aE09D5611b887B6a12925C',
+    abi: pythAbi
+  } as const;
+  const pyth_price_service = new EvmPriceServiceConnection('https://hermes.pyth.network/')
+  const tbtc_feed_id = '0x56a3121958b01f99fdc4e1fd01e81050602c7ace3a571918bb55c6a96657cca9' as const;
   const synths = [
     {
       name: 'stBTC',
@@ -34,7 +44,7 @@ function App() {
     abi: SPOT_MARKET_ABI
   } as const;
   const approval = useReadContracts({
-    contracts: 
+    contracts:
       synths.map((synth) => {
         return {
           ...synth,
@@ -45,15 +55,15 @@ function App() {
   })
 
   const balance = useReadContracts({
-    contracts: 
+    contracts:
       synths.map((synth) => {
-      return {
-        ...synth,
-        functionName: 'balanceOf',
-        args: [account.address]
-      } as const;
+        return {
+          ...synth,
+          functionName: 'balanceOf',
+          args: [account.address]
+        } as const;
+      })
   })
-})
   function correctChain(id: number) {
     return account.chainId === id
   }
@@ -72,24 +82,47 @@ function App() {
 
   async function unwrapSynths(e: React.MouseEvent) {
     e.preventDefault();
-    const multicall = Array<{target: Address, requireSuccess: boolean, callData: `0x${string}`}>();
-    for(let i = 0; i < synths.length; i++) {
-      if(balance.data !== undefined && balance.data[i].result !== undefined && balance.data[i].result! > 0n) {
+    const multicall = Array<{ target: Address, requireSuccess: boolean, value: bigint, callData: `0x${string}` }>();
+    for (let i = 0; i < synths.length; i++) {
+      if (balance.data !== undefined && balance.data[i].result !== undefined && balance.data[i].result! > 0n) {
         multicall.push(
           {
             target: SpotMarket.address,
             requireSuccess: true,
+            value: 0n,
             callData: encodeFunctionData({
-            abi: SpotMarket.abi,
-            functionName: 'unwrap',
-            args: [synths[i].marketId, balance.data[i].result!, balance.data[i].result!]
-          })})
+              abi: SpotMarket.abi,
+              functionName: 'unwrap',
+              args: [synths[i].marketId, balance.data[i].result!, 0n]
+            })
+          })
       }
     }
+    const priceUpdate = await pyth_price_service.getPriceFeedsUpdateData([tbtc_feed_id]);
+      console.log(priceUpdate);
+      const fee = await readContract(config, {
+        ...pyth,
+        functionName: 'getUpdateFee',
+        args: [priceUpdate]
+      })
+      console.log(multicall);
+      multicall.unshift(
+        {
+          target: pyth.address,
+          requireSuccess: true,
+          value: fee as bigint,
+          callData: encodeFunctionData(
+            {abi: pyth.abi,
+            functionName: 'updatePriceFeeds',
+            args: [priceUpdate]}
+          )
+        }
+      )
     writeContract({
       address: TrustedMulticallForwarderAddress,
       abi: TrustedMulticallForwarderAbi,
-      functionName: 'aggregate3',
+      functionName: 'aggregate3Value',
+      value: fee as bigint,
       args: [multicall]
     })
   }
@@ -134,12 +167,12 @@ function App() {
       </div>}
       {status === 'error' && <div>{error.message}</div>}
       <div>
-      {account.isConnected && balance.isSuccess && synths.map((s, i) => {
-        return <Fragment key={s.name}>
-          <span>{s.name} balance: {formatEther(balance.data[i].result as bigint)}</span>
-          <br />
-        </Fragment>
-      })}
+        {account.isConnected && balance.isSuccess && synths.map((s, i) => {
+          return <Fragment key={s.name}>
+            <span>{s.name} balance: {formatEther(balance.data[i].result as bigint)}</span>
+            <br />
+          </Fragment>
+        })}
       </div>
       <div>
         {account.isConnected && balance.isSuccess && approval.isSuccess && synths.map((s, i) => {
@@ -171,11 +204,11 @@ function App() {
         <span>Waiting for tx: <a href={`${account.chain?.blockExplorers.default.url}/tx/${hash}`}>{hash}</a></span>
       )}
       <div>
-      {synths.map((s) => (
-        <Fragment key={s.name}><span>{s.name} <a href={`${arbitrum.blockExplorers.default.url}/address/${s.address}`}>{s.address}</a></span><br /></Fragment>
-      ))
-      }
-      <span>Spot Market: <a href={`${arbitrum.blockExplorers.default.url}/address/${SpotMarket.address}`}>{SpotMarket.address}</a></span>
+        {synths.map((s) => (
+          <Fragment key={s.name}><span>{s.name} <a href={`${arbitrum.blockExplorers.default.url}/address/${s.address}`}>{s.address}</a></span><br /></Fragment>
+        ))
+        }
+        <span>Spot Market: <a href={`${arbitrum.blockExplorers.default.url}/address/${SpotMarket.address}`}>{SpotMarket.address}</a></span>
       </div>
     </>
   )
